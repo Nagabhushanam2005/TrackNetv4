@@ -1,5 +1,8 @@
 # TrackNetV4
 
+
+# Refer updates on [`Updates.md`](Updates.md).
+
 <p align="center">
   <img src="assets/pipeline.jpg" width="900" alt="TrackNetV4 Pipeline"/>
   <br>
