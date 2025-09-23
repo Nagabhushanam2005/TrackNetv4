@@ -25,7 +25,6 @@ def preprocess_dataset(dataset_name, height, width):
     """Preprocess specified dataset using provided target image dimensions."""
     dataset = get_dataset(dataset_name, height, width)
     dataset[0].process_data()
-    dataset[1].process_data()
 
 
 if __name__ == "__main__":

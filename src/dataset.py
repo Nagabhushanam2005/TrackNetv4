@@ -15,6 +15,8 @@ from util import genHeatMap
 from constants import (
     SIGMA,
     MAG,
+    TENNIS_DATASET_CLIP_PLAYER_CSV_DIR,
+    TENNIS_DATASET_SELECT_CLIP,
     WIDTH,
     HEIGHT,
     TENNIS_DATASET_GAME_LEVEL_SPLIT_CSV,
@@ -91,12 +93,22 @@ class TennisDataset(BaseDataset):
     def __init__(self, root_dir, mode, split_type='game_level', **kwargs):
         self.split_type = split_type
         self.mode = mode
+        self.valid_clips = []
         self.processed_folder = os.path.join(root_dir, "processed_data", self.split_type, self.mode)
         if mode == 'val': # The split files use 'test' for validation set
             mode = 'test'
         super().__init__(root_dir, mode, **kwargs)
 
     def process_data(self):
+        # read the select clip dirs
+        with open(TENNIS_DATASET_SELECT_CLIP, 'r') as f:
+            selected_clips = f.read().splitlines()
+        self.valid_clips = []
+        for i in selected_clips:
+            s=tuple(i.strip().split('/'))
+            self.valid_clips.append(s)
+        print(self.valid_clips)
+        
         if self.split_type == "game_level":
             self._process_game_level()
         elif self.split_type == "clip_level":
@@ -203,7 +215,7 @@ class TennisDataset(BaseDataset):
                 game, clip, game_folder, save_data_dir, count = args
                 clip_folder = os.path.join(game_folder, clip)
                 print(f"Processing game: {game}, clip: {clip}", flush=True)
-                x_data, y_data = self._process_clip(clip_folder)
+                x_data, y_data = self._process_clip(game, clip, clip_folder)
                 self._save_data(save_data_dir, count, x_data, y_data)
                 return count
 
@@ -216,12 +228,14 @@ class TennisDataset(BaseDataset):
                 game_folder = os.path.join(self.root_dir, "Dataset", game)
                 for clip in clips:
                     key = (game, clip)
+                    if key not in self.valid_clips: 
+                        continue
                     if key not in seen:
                         tasks.append((game, clip, game_folder, save_data_dir, count))
                         seen.add(key)
                         count += 1
-                with concurrent.futures.ThreadPoolExecutor() as executor:
-                    list(executor.map(process_clip_wrapper, tasks))
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                list(executor.map(process_clip_wrapper, tasks))
         else:
             # set_data is a list of games; process all clips in each game folder.
             seen = set()
@@ -231,12 +245,14 @@ class TennisDataset(BaseDataset):
                 clips = [d for d in os.listdir(game_folder) if os.path.isdir(os.path.join(game_folder, d))]
                 for clip in clips:
                     key = (game, clip)
+                    if key not in self.valid_clips: 
+                        continue
                     if key not in seen:
                         tasks.append((game, clip, game_folder, save_data_dir, count))
                         seen.add(key)
                         count += 1
-                with concurrent.futures.ThreadPoolExecutor() as executor:
-                    list(executor.map(process_clip_wrapper, tasks))
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                list(executor.map(process_clip_wrapper, tasks))
     
     def _save_data(self, save_dir, count, x_data, y_data):
         """
@@ -245,16 +261,27 @@ class TennisDataset(BaseDataset):
         np.save(os.path.join(save_dir, f'x_data_{count}.npy'), x_data)
         np.save(os.path.join(save_dir, f'y_data_{count}.npy'), y_data)
 
-    def _process_clip(self, clip_folder):
+    def _process_clip(self, game, clip, clip_folder):
         label_path = os.path.join(clip_folder, 'Label.csv')
+        player_label_path = os.path.join(TENNIS_DATASET_CLIP_PLAYER_CSV_DIR, f'{game}_{clip}_players.csv')
         if not os.path.exists(label_path):
             return None, None
-            
+        if not os.path.exists(player_label_path):
+            return None, None
         label_data = pd.read_csv(label_path)
         file_names = label_data['file name'].values
         visibility = label_data['visibility'].values
         x_coords = label_data['x-coordinate'].values
         y_coords = label_data['y-coordinate'].values
+
+        player_data = pd.read_csv(player_label_path)
+        frames = player_data['frame'].values
+        player_ids = player_data['player_id'].values
+        x1_coords = player_data['x1'].values
+        y1_coords = player_data['y1'].values
+        x2_coords = player_data['x2'].values
+        y2_coords = player_data['y2'].values
+        
 
         num_frames = file_names.shape[0]
         
@@ -277,7 +304,7 @@ class TennisDataset(BaseDataset):
                 frame_path = os.path.join(clip_folder, str(file_names[i + j]))
                 if not os.path.exists(frame_path):
                     continue
-                
+
                 img = Image.open(frame_path)
                 img = self.resize(img)
                 img_tensor = self.transform(img)
@@ -285,21 +312,50 @@ class TennisDataset(BaseDataset):
 
             if len(frames_sequence) != self.sequence_dim[0]:
                 continue
-            
+
             # Stack frames and then flatten the first two dimensions
             x_tensor = torch.stack(frames_sequence, dim=0) # Shape: (3, 3, H, W)
             x_tensor = x_tensor.view(-1, self.target_img_height, self.target_img_width) # Shape: (9, H, W)
             x_data_list.append(x_tensor.numpy())
 
+            # Ball heatmap sequence (existing)
             heatmap_sequence = []
             for j in range(self.sequence_dim[1]):
                 if visibility[i + j] == 0:
                     heatmap = genHeatMap(self.target_img_width, self.target_img_height, -1, -1, self.sigma, self.mag)
                 else:
-                    heatmap = genHeatMap(self.target_img_width, self.target_img_height, int(x_coords[i + j] / ratio),
-                                        int(y_coords[i + j] / ratio), self.sigma, self.mag)
+                    heatmap = genHeatMap(
+                        self.target_img_width, self.target_img_height,
+                        int(x_coords[i + j] / ratio),
+                        int(y_coords[i + j] / ratio),
+                        self.sigma, self.mag
+                    )
                 heatmap_sequence.append(heatmap)
-            y_data_list.append(heatmap_sequence)
+            heatmap_sequence = np.stack(heatmap_sequence, axis=0)  # Shape: (seq_len, H, W)
+
+            # Player heatmap sequence
+            player_heatmap_sequence = []
+            for j in range(self.sequence_dim[1]):
+                frame_idx = i + j
+                frame_num = frames[frame_idx] if frame_idx < len(frames) else None
+                # Find all players in this frame
+                frame_players = player_data[player_data['frame'] == frame_num]
+                player_heatmap = np.zeros((self.target_img_height, self.target_img_width), dtype=np.float32)
+                for _, prow in frame_players.iterrows():
+                    # Scale coordinates
+                    x1 = int(prow['x1'] / ratio)
+                    y1 = int(prow['y1'] / ratio)
+                    x2 = int(prow['x2'] / ratio)
+                    y2 = int(prow['y2'] / ratio)
+                    # Draw filled rectangle for player region
+                    cv2.rectangle(player_heatmap, (x1, y1), (x2, y2), 1.0, thickness=-1)
+                player_heatmap_sequence.append(player_heatmap)
+            player_heatmap_sequence = np.stack(player_heatmap_sequence, axis=0)  # Shape: (seq_len, H, W)
+
+            y_data_list.append(np.concatenate([
+                heatmap_sequence[:, None, :, :],            # (seq_len, 1, H, W)
+                player_heatmap_sequence[:, None, :, :]      # (seq_len, 1, H, W)
+            ], axis=1))  # (seq_len, 2, H, W)
 
         if not x_data_list:
             return None, None

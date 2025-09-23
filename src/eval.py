@@ -39,7 +39,7 @@ from torch.utils.data import DataLoader
 
 from util import outcome, get_dataset, get_model
 from constants import HEIGHT, WIDTH
-from models.TrackNetV4_pt import TrackNetV4 as TrackNetV4_pt
+from src.models.TrackNetV5 import TrackNetV4 as TrackNetV4_pt
 
 
 def evaluate_model(model_name, model_path, dataset, batch_size, tol, result_dir):

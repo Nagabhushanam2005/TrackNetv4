@@ -36,14 +36,15 @@ Note:
 import argparse
 import datetime
 import os
+import time
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
 
 from util import get_dataset, outcome, get_model
-from models.TrackNetV2_pt import TrackNetV2 as TrackNetV2_pt
-from models.TrackNetV4_pt import TrackNetV4 as TrackNetV4_pt
+# from models.TrackNetV2_pt import TrackNetV2 as TrackNetV2_pt
+# from models.TrackNetV4_pt import TrackNetV4 as TrackNetV4_pt
 
 
 def main(args):
@@ -109,6 +110,7 @@ def main(args):
     optimizer = optim.Adadelta(model.parameters(), lr=learning_rate)
 
     # Training loop
+    start_time = time.time()
     for epoch in range(epochs):
         model.train()
         running_loss = 0.0
@@ -121,7 +123,7 @@ def main(args):
             clip_inputs = clip_inputs.squeeze(0)
             clip_labels = clip_labels.squeeze(0)
             
-            print("Clip input shape:", clip_inputs.shape, " Clip label shape:", clip_labels.shape)
+            # print("Clip input shape:", clip_inputs.shape, " Clip label shape:", clip_labels.shape)
             # Manually iterate over the clip's sequences in batches
             for j in range(0, clip_inputs.size(0), batch_size):
                 inputs = clip_inputs[j:j+batch_size]
@@ -132,6 +134,12 @@ def main(args):
                 if 'TrackNetV4' in model_name:
                     outputs, motion_loss = model(inputs)
                     loss = criterion(outputs, labels) + motion_loss
+                if 'TrackNetV5' in model_name:
+                    ball_outputs, player_outputs, motion_loss = model(inputs)
+                    ball_labels = labels[:, :, 0, :, :]
+                    player_labels = labels[:, :, 1, :, :]
+
+                    loss = criterion(ball_outputs, ball_labels) + criterion(player_outputs, player_labels) + motion_loss
                 else:
                     outputs = model(inputs)
                     loss = criterion(outputs, labels)
@@ -141,7 +149,7 @@ def main(args):
 
                 running_loss += loss.item()
             
-            if (i + 1) % 10 == 0:
+            if (i  + 1) % 10 == 0:
                 print(f'Epoch [{epoch+1}/{epochs}], Step [{i+1}/{len(train_loader)}], Avg Clip Loss: {running_loss / 10:.4f}')
                 running_loss = 0.0
 
@@ -155,28 +163,55 @@ def main(args):
                 labels = labels.float().to(device)
                 inputs = inputs.squeeze(0)
                 labels = labels.squeeze(0)
-
                 for j in range(0, inputs.size(0), batch_size):
                     batch_inputs = inputs[j:j+batch_size]
                     batch_labels = labels[j:j+batch_size]
-                    if 'TrackNetV4' in model_name:
+                    if 'TrackNetV5' in model_name:
+                        ball_outputs, player_outputs, _ = model(batch_inputs)
+                        ball_labels = batch_labels[:, :, 0, :, :]
+                        player_labels = batch_labels[:, :, 1, :, :]
+                        val_loss += criterion(ball_outputs, ball_labels).item()
+                        val_loss += criterion(player_outputs, player_labels).item()
+                        # Calculate TP, TN, FP, FN for outcome (for ball only)
+                        preds = (ball_outputs > 0.5).cpu()
+                        t, n, p, f = outcome(ball_labels.cpu(), preds, tol)
+                        tp += t
+                        tn += n
+                        fp += p
+                        fn += f
+                        # Calculate TP, TN, FP, FN for outcome (for player only)
+                        preds = (player_outputs > 0.5).cpu()
+                        t, n, p, f = outcome(player_labels.cpu(), preds, tol)
+                        tp += t
+                        tn += n
+                        fp += p
+                        fn += f
+                    elif 'TrackNetV4' in model_name:
                         outputs, _ = model(batch_inputs)
+                        val_loss += criterion(outputs, batch_labels).item()
+                        preds = (outputs > 0.5).cpu()
+                        t, n, p, f = outcome(batch_labels.cpu(), preds, tol)
+                        tp += t
+                        tn += n
+                        fp += p
+                        fn += f
                     else:
                         outputs = model(batch_inputs)
-                    val_loss += criterion(outputs, batch_labels).item()
-                    
-                    # Calculate TP, TN, FP, FN for outcome
-                    preds = (outputs > 0.5).cpu()
-                    t, n, p, f = outcome(batch_labels.cpu(), preds, tol)
-                    tp += t
-                    tn += n
-                    fp += p
-                    fn += f
+                        val_loss += criterion(outputs, batch_labels).item()
+                        preds = (outputs > 0.5).cpu()
+                        t, n, p, f = outcome(batch_labels.cpu(), preds, tol)
+                        tp += t
+                        tn += n
+                        fp += p
+                        fn += f
 
         val_loss /= len(val_loader.dataset) # Average loss per sample
         print(f'Epoch [{epoch+1}/{epochs}], Val Loss: {val_loss:.4f}')
         print(f'TP: {tp}, TN: {tn}, FP: {fp}, FN: {fn}')
         
+        end_time = time.time()
+        print(f"Time taken for epoch {epoch + 1}: {end_time - start_time:.2f} seconds")
+        start_time = end_time
         # Save model
         if (epoch + 1) % save_freq == 0:
             model_save_path = os.path.join(work_dir, f"{model_name}_epoch_{epoch+1}.pth")
@@ -192,7 +227,7 @@ if __name__ == "__main__":
         '--model_name',
         type=str,
         required=True,
-        choices=['Baseline_TrackNetV2', 'TrackNetV4_TypeA', 'TrackNetV4_TypeB'],
+        choices=['Baseline_TrackNetV2', 'TrackNetV4_TypeA', 'TrackNetV4_TypeB', 'TrackNetV5_TypeA', 'TrackNetV5_TypeB'],
         help="Name of the model to use."
     )
     parser.add_argument(

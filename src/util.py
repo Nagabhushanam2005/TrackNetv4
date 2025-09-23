@@ -9,6 +9,7 @@ import torch
 from constants import BADMINTON_DATASET_ROOT, TENNIS_DATASET_ROOT, NEW_TENNIS_DATASET_ROOT, WIDTH, HEIGHT
 from models.TrackNetV2_pt import TrackNetV2 as TrackNetV2_pt
 from models.TrackNetV4_pt import TrackNetV4 as TrackNetV4_pt
+from models.TrackNetV5 import TrackNetV5 as TrackNetV5_pt
 
 ####################################
 # Dataset related helper functions #
@@ -101,6 +102,11 @@ def get_model(model_name, height=HEIGHT, width=WIDTH):
         return TrackNetV4_pt(height, width, fusion_layer_type='TypeA')
     elif model_name == 'TrackNetV4_TypeB':
         return TrackNetV4_pt(height, width, fusion_layer_type='TypeB')
+    elif model_name == 'TrackNetV5_TypeA':
+        return TrackNetV5_pt(height, width, fusion_layer_type='TypeA')
+    elif model_name == 'TrackNetV5_TypeB':
+        return TrackNetV5_pt(height, width, fusion_layer_type='TypeB')
+
     else:
         raise ValueError(f"Unknown model name: {model_name}")
 
