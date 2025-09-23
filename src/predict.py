@@ -14,48 +14,58 @@ import numpy as np
 import time
 import queue
 import argparse
-from tensorflow.keras.models import load_model
-from tensorflow.keras.preprocessing.image import img_to_array, array_to_img
-import keras.backend as K
-from models.TrackNetV4 import MotionPromptLayer, FusionLayerTypeA, FusionLayerTypeB
+import torch
+from torchvision.transforms import ToTensor, Resize
+from PIL import Image
+from models.TrackNetV2_pt import TrackNetV2 as TrackNetV2_pt
+from models.TrackNetV4_pt import TrackNetV4 as TrackNetV4_pt
+from util import get_model
 from constants import HEIGHT, WIDTH
-from util import custom_loss
 
 # Constants
 BATCH_SIZE = 1
 INPUT_HEIGHT = 288
 INPUT_WIDTH = 512
 
-def run_model_inference(model, frames):
+def run_model_inference(model, frames, device):
     """
     Pre-processes the frames and runs inference on the model.
     
     Args:
         model: Loaded model for inference.
         frames (list): List of frames to run inference on.
+        device: The device to run inference on.
     
     Returns:
         predictions: Model predictions for the frames.
         inference_time (float): Time taken for model inference.
     """
-    input_batch = []
     
     # Preprocess the frames for model input
+    transform = ToTensor()
+    resize = Resize((INPUT_HEIGHT, INPUT_WIDTH))
+    
+    input_batch = []
     for frame in frames:
-        resized_frame = array_to_img(frame[..., ::-1]).resize((INPUT_WIDTH, INPUT_HEIGHT))
-        frame_array = np.moveaxis(img_to_array(resized_frame), -1, 0)
-        input_batch.extend(frame_array[:3])
+        img = Image.fromarray(frame[..., ::-1])
+        img = resize(img)
+        img_tensor = transform(img)
+        input_batch.append(img_tensor)
 
     # Prepare input for model prediction
-    input_batch = np.asarray(input_batch).reshape((1, 9, INPUT_HEIGHT, INPUT_WIDTH)).astype('float32') / 255
+    input_tensor = torch.cat(input_batch, dim=0).unsqueeze(0).to(device)
 
     # Perform prediction
     inference_start_time = time.time()
-    predictions = model.predict(input_batch, batch_size=BATCH_SIZE, verbose=1)
+    with torch.no_grad():
+        if isinstance(model, TrackNetV4_pt):
+            predictions, _ = model(input_tensor)
+        else:
+            predictions = model(input_tensor)
     inference_end_time = time.time()
 
     inference_time = inference_end_time - inference_start_time
-    return predictions, inference_time
+    return predictions.cpu(), inference_time
 
 def post_process_predictions(predictions, frame1, frame2, frame3, frame_count, video_writer, csv_output_path, width_ratio, height_ratio, predicted_points_queue):
     """
@@ -71,8 +81,8 @@ def post_process_predictions(predictions, frame1, frame2, frame3, frame_count, v
         height_ratio: Ratio to adjust the predicted points' height.
         predicted_points_queue: Deque storing the predicted points.
     """
-    binary_predictions = (predictions > 0.5).astype('float32')
-    binary_heatmaps = (binary_predictions[0] * 255).astype('uint8')
+    binary_predictions = (predictions > 0.5).float()
+    binary_heatmaps = (binary_predictions[0] * 255).byte().numpy()
 
     for i, current_frame in enumerate([frame1, frame2, frame3]):
         if np.amax(binary_heatmaps[i]) <= 0:
@@ -99,100 +109,112 @@ def post_process_predictions(predictions, frame1, frame2, frame3, frame_count, v
             cv2.circle(frame_copy, (predicted_x_center, predicted_y_center), 5, (0, 0, 255), -1)
             video_writer.write(frame_copy)
 
-            # Write results to CSV
             with open(csv_output_path, 'a') as csv_file:
-                csv_file.write(f"{frame_count},1,{predicted_x_center},{predicted_y_center}\n")
+                csv_file.write(f"{frame_count},{predicted_x_center},{predicted_y_center},1\n")
+        frame_count += 1
 
 def main(args):
     """
-    Main function to handle video processing, model inference, and result saving.
+    Main function to run the prediction script.
     """
+    # Unpack arguments
     video_path = args.video_path
-    model_weights_path = args.model_weights
+    model_weights = args.model_weights
+    model_name = args.model_name
     output_dir = args.output_dir
     queue_length = args.queue_length
+
+    # Set up device
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}")
+
+    # Load model
+    model = get_model(model_name, INPUT_HEIGHT, INPUT_WIDTH)
+    model.load_state_dict(torch.load(model_weights))
+    model.to(device)
+    model.eval()
+
+    # Create output directory if it doesn't exist
     os.makedirs(output_dir, exist_ok=True)
 
-    # Initialize the predicted points queue with the specified length
-    predicted_points_queue = queue.deque([None] * queue_length)
-
-    # Load the trained model with custom objects
-    model = load_model(
-        model_weights_path, 
-        custom_objects={
-            'MotionPromptLayer': MotionPromptLayer,
-            # 'MotionIncorporationLayerV1': MotionIncorporationLayerV1,  # Ensure these are imported or defined
-            # 'MotionIncorporationLayerV2': MotionIncorporationLayerV2,
-            # 'CombineOutputs': CombineOutputs,
-            # 'MotionFramesInput': MotionFramesInput,
-            'custom_loss': custom_loss,
-        }
-    )
-
-    # Read input video and set up output video settings
+    # Open video capture
     video_capture = cv2.VideoCapture(video_path)
-    success, frame1 = video_capture.read()
-    success, frame2 = video_capture.read()
-    success, frame3 = video_capture.read()
-
-    height_ratio = frame1.shape[0] / INPUT_HEIGHT
-    width_ratio = frame1.shape[1] / INPUT_WIDTH
-    video_size = (int(INPUT_WIDTH * width_ratio), int(INPUT_HEIGHT * height_ratio))
-    frames_per_second = int(video_capture.get(cv2.CAP_PROP_FPS))
-
-    if video_path.endswith('avi'):
-        video_codec = cv2.VideoWriter_fourcc(*'DIVX')
-    elif video_path.endswith('mp4'):
-        video_codec = cv2.VideoWriter_fourcc(*'mp4v')
-    else:
-        print('Error: Video format must be .avi or .mp4')
+    if not video_capture.isOpened():
+        print("Error: Could not open video.")
         sys.exit(1)
 
-    # Output files
-    output_video_path = os.path.join(output_dir, os.path.basename(video_path[:-4] + '_predict' + video_path[-4:]))
-    csv_output_path = os.path.join(output_dir, os.path.basename(video_path[:-4] + '_predict.csv'))
+    # Get video properties
+    frame_width = int(video_capture.get(cv2.CAP_PROP_FRAME_WIDTH))
+    frame_height = int(video_capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    fps = int(video_capture.get(cv2.CAP_PROP_FPS))
+    total_frames = int(video_capture.get(cv2.CAP_PROP_FRAME_COUNT))
 
+    # Set up video writer
+    output_video_path = os.path.join(output_dir, os.path.basename(video_path))
+    video_writer = cv2.VideoWriter(output_video_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (frame_width, frame_height))
+
+    # Set up CSV output
+    csv_output_path = os.path.join(output_dir, f"{os.path.splitext(os.path.basename(video_path))[0]}_predictions.csv")
     with open(csv_output_path, 'w') as csv_file:
-        csv_file.write('Frame,Visibility,X,Y\n')
-    video_writer = cv2.VideoWriter(output_video_path, video_codec, frames_per_second, video_size)
+        csv_file.write("frame,x,y,visibility\n")
 
-    # Main loop
+    # Initialize queues
+    frame_queue = queue.Queue()
+    predicted_points_queue = queue.deque([None] * queue_length, maxlen=queue_length)
+
+    # Ratios for coordinate conversion
+    width_ratio = frame_width / INPUT_WIDTH
+    height_ratio = frame_height / INPUT_HEIGHT
+
     frame_count = 0
-    total_inference_time = 0.0
-    start_time = time.time()
+    total_inference_time = 0
+    num_inferences = 0
 
-    while success:
-        frames = [frame1, frame2, frame3]
-        predictions, inference_time = run_model_inference(model, frames)
-        post_process_predictions(predictions, frame1, frame2, frame3, frame_count, video_writer, csv_output_path, width_ratio, height_ratio, predicted_points_queue)
-        
-        # Accumulate the total inference time
-        total_inference_time += inference_time
-        frame_count += 1
+    while True:
+        ret, frame = video_capture.read()
+        if not ret:
+            break
 
-        # Read next set of frames
-        success, frame1 = video_capture.read()
-        success, frame2 = video_capture.read()
-        success, frame3 = video_capture.read()
+        frame_queue.put(frame)
 
-    # Clean up resources
+        if frame_queue.qsize() >= 3:
+            frame1 = frame_queue.get()
+            frame2 = frame_queue.get()
+            frame3 = frame_queue.get()
+
+            predictions, inference_time = run_model_inference(model, [frame1, frame2, frame3], device)
+            total_inference_time += inference_time
+            num_inferences += 1
+
+            post_process_predictions(predictions, frame1, frame2, frame3, frame_count, video_writer, csv_output_path, width_ratio, height_ratio, predicted_points_queue)
+            frame_count += 3
+
+            # Put back frames for overlapping windows
+            frame_queue.put(frame2)
+            frame_queue.put(frame3)
+
+        print(f"Processing frame {frame_count}/{total_frames}", end='\r')
+
+    # Process remaining frames in the queue
+    while not frame_queue.empty():
+        frame = frame_queue.get()
+        video_writer.write(frame)
+
+    # Release resources
+    video_capture.release()
     video_writer.release()
-    end_time = time.time()
 
-    # Output timing information
-    if total_inference_time > 0:
-        inference_speed = frame_count / total_inference_time
-        print(f'Total model inference time: {total_inference_time:.2f} seconds')
-        print(f'Model inference speed: {inference_speed:.2f} frames/sec')
-
-    print(f'Total script runtime: {end_time - start_time:.2f} seconds')
-    print('Prediction complete.')
+    print(f"\nPrediction complete. Output saved to {output_dir}")
+    if num_inferences > 0:
+        print(f"Average inference time: {total_inference_time / num_inferences:.4f} seconds")
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Predict trajectories on a video using a trained model")
-    parser.add_argument('--video_path', required=True, help="Path to the video file")
-    parser.add_argument('--model_weights', required=True, help="Path to the model weights")
-    parser.add_argument('--output_dir', default=os.getcwd(), help="Directory to save output files (default: current working directory)")
-    parser.add_argument('--queue_length', type=int, default=5, help="Length of the predicted points queue (default: 5)")
+    parser = argparse.ArgumentParser(description="Predict trajectories on video using a trained model.")
+    parser.add_argument("--video_path", type=str, required=True, help="Path to the input video.")
+    parser.add_argument("--model_weights", type=str, required=True, help="Path to the trained model weights (.pth).")
+    parser.add_argument("--model_name", type=str, required=True, choices=['Baseline_TrackNetV2', 'TrackNetV4_TypeA', 'TrackNetV4_TypeB'], help="Name of the model to use.")
+    parser.add_argument("--output_dir", type=str, required=True, help="Directory to save the output video and CSV.")
+    parser.add_argument("--queue_length", type=int, default=10, help="Length of the trajectory queue.")
+    
     args = parser.parse_args()
     main(args)

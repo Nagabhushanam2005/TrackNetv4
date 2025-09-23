@@ -16,7 +16,7 @@ Example:
 
 Arguments:
     --model_name   : Name of the model to use.
-                     Allowed values: Baseline_TrackNetV2.
+                     Allowed values: Baseline_TrackNetV2, TrackNetV4_TypeA, TrackNetV4_TypeB.
     --dataset      : Name of the dataset to use.
                      Allowed values: tennis_game_level_split, tennis_clip_level_split, badminton, new_tennis.
     --batch_size   : Batch size for training (default: 3).
@@ -25,7 +25,7 @@ Arguments:
     --width        : Target image width (default: 512).
     --epochs       : Number of epochs for training (default: 30).
     --tol          : Tolerance for the outcome evaluation (default: 4).
-    --model_path   : Path to a pretrained model (.pth) to load before training (optional).
+    --model_path   : Path to a pretrained model (.keras) to load before training (optional).
     --work_dir     : Directory to save the trained models (default: "./models").
     --save_freq    : Frequency (in epochs) to save model checkpoints (default: 1).
 
@@ -36,14 +36,17 @@ Note:
 import argparse
 import datetime
 import os
-import torch
-import torch.nn as nn
-import torch.optim as optim
-from torch.utils.data import DataLoader
 
-from util import get_dataset, outcome, get_model
-from models.TrackNetV2_pt import TrackNetV2 as TrackNetV2_pt
-from models.TrackNetV4_pt import TrackNetV4 as TrackNetV4_pt
+from tensorflow.keras.models import load_model
+from tensorflow.keras.optimizers import Adadelta
+
+from util import custom_loss, get_dataset, get_model, outcome
+import tensorflow as tf
+from models.TrackNetV4 import (
+    MotionPromptLayer,
+    FusionLayerTypeA,
+    FusionLayerTypeB
+)
 
 
 def main(args):
@@ -88,100 +91,71 @@ def main(args):
 
     # Create the work directory if it doesn't exist
     os.makedirs(work_dir, exist_ok=True)
-    
-    # Set up device
-    device = torch.device("cuda:2" if torch.cuda.is_available() else "cpu")
-    print(f"Using device: {device}")
-
-    # Load dataset
-    train_dataset, val_dataset = get_dataset(dataset_name, height, width)
-    train_loader = DataLoader(train_dataset, batch_size=1, shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=1, shuffle=False)
+    # Set TensorFlow to use CPU only
+    # Set TensorFlow to use only GPU 2
+    gpus = tf.config.list_physical_devices('GPU')
+    if gpus:
+        try:
+            tf.config.set_visible_devices(gpus[2], 'GPU')
+            tf.config.experimental.set_memory_growth(gpus[2], True)
+            print("Using GPU 2 for training.")
+        except IndexError:
+            print("GPU 2 not found. Using default device.")
+        except RuntimeError as e:
+            print(f"RuntimeError: {e}")
+    else:
+        print("No GPU found. Using CPU.")
 
     # Load model
     model = get_model(model_name, height, width)
-    if model_path:
-        model.load_state_dict(torch.load(model_path))
-    model.to(device)
 
-    # Define loss and optimizer
-    criterion = nn.BCELoss()
-    optimizer = optim.Adadelta(model.parameters(), lr=learning_rate)
+    # Load training dataset
+    dataset_train = get_dataset(dataset_name, "train")
 
-    # Training loop
+    # Compile the model with Adadelta optimizer and custom loss
+    model.compile(
+        loss=custom_loss,
+        optimizer=Adadelta(learning_rate=learning_rate),
+        metrics=['accuracy']
+    )
+
+    # Main training loop
     for epoch in range(epochs):
-        model.train()
-        running_loss = 0.0
         print(f"======== Epoch {epoch + 1} ========")
-        for i, (clip_inputs, clip_labels) in enumerate(train_loader):
-            clip_inputs = clip_inputs.float().to(device)
-            clip_labels = clip_labels.float().to(device)
 
-            # Squeeze the batch dimension added by the DataLoader
-            clip_inputs = clip_inputs.squeeze(0)
-            clip_labels = clip_labels.squeeze(0)
-            
-            print("Clip input shape:", clip_inputs.shape, " Clip label shape:", clip_labels.shape)
-            # Manually iterate over the clip's sequences in batches
-            for j in range(0, clip_inputs.size(0), batch_size):
-                inputs = clip_inputs[j:j+batch_size]
-                labels = clip_labels[j:j+batch_size]
+        # Train on each batch in the training dataset
+        for x_train, y_train in dataset_train:
+            model.fit(x_train, y_train, batch_size=batch_size, epochs=1)
+            del x_train, y_train
 
-                optimizer.zero_grad()
+        # Evaluate model performance on the training set (if enabled)
+        if not args.disable_eval_on_train:
+            TP = TN = FP1 = FP2 = FN = 0
+            for x_train, y_train in dataset_train:
+                y_pred = model.predict(x_train, batch_size=batch_size)
+                y_pred = (y_pred > 0.5).astype('float32')
 
-                if 'TrackNetV4' in model_name:
-                    outputs, motion_loss = model(inputs)
-                    loss = criterion(outputs, labels) + motion_loss
-                else:
-                    outputs = model(inputs)
-                    loss = criterion(outputs, labels)
+                tp, tn, fp1, fp2, fn = outcome(y_pred, y_train, tol)
+                TP += tp
+                TN += tn
+                FP1 += fp1
+                FP2 += fp2
+                FN += fn
 
-                loss.backward()
-                optimizer.step()
+                del x_train, y_train, y_pred
 
-                running_loss += loss.item()
-            
-            if (i + 1) % 10 == 0:
-                print(f'Epoch [{epoch+1}/{epochs}], Step [{i+1}/{len(train_loader)}], Avg Clip Loss: {running_loss / 10:.4f}')
-                running_loss = 0.0
+            print(f"Epoch {epoch + 1} results: TP={TP}, TN={TN}, FP1={FP1}, FP2={FP2}, FN={FN}")
 
-        # Validation
-        model.eval()
-        val_loss = 0.0
-        tp, tn, fp, fn = 0, 0, 0, 0
-        with torch.no_grad():
-            for inputs, labels in val_loader:
-                inputs = inputs.float().to(device)
-                labels = labels.float().to(device)
-                inputs = inputs.squeeze(0)
-                labels = labels.squeeze(0)
-
-                for j in range(0, inputs.size(0), batch_size):
-                    batch_inputs = inputs[j:j+batch_size]
-                    batch_labels = labels[j:j+batch_size]
-                    if 'TrackNetV4' in model_name:
-                        outputs, _ = model(batch_inputs)
-                    else:
-                        outputs = model(batch_inputs)
-                    val_loss += criterion(outputs, batch_labels).item()
-                    
-                    # Calculate TP, TN, FP, FN for outcome
-                    preds = (outputs > 0.5).cpu()
-                    t, n, p, f = outcome(batch_labels.cpu(), preds, tol)
-                    tp += t
-                    tn += n
-                    fp += p
-                    fn += f
-
-        val_loss /= len(val_loader.dataset) # Average loss per sample
-        print(f'Epoch [{epoch+1}/{epochs}], Val Loss: {val_loss:.4f}')
-        print(f'TP: {tp}, TN: {tn}, FP: {fp}, FN: {fn}')
-        
-        # Save model
+        # Save model checkpoint based on frequency
         if (epoch + 1) % save_freq == 0:
-            model_save_path = os.path.join(work_dir, f"{model_name}_epoch_{epoch+1}.pth")
-            torch.save(model.state_dict(), model_save_path)
-            print(f"Model saved to {model_save_path}")
+            model_path = os.path.join(work_dir, f"model_{epoch + 1}.keras")
+            model.save(model_path)
+            print(f"Saved model to {model_path}")
+
+    # Save the final model after training
+    final_model_path = os.path.join(work_dir, "model_final.keras")
+    model.save(final_model_path)
+    print(f"Final model saved to {final_model_path}")
 
 
 if __name__ == "__main__":
@@ -211,10 +185,15 @@ if __name__ == "__main__":
     parser.add_argument(
         "--model_path",
         type=str,
-        help="Path to pretrained model (.pth) to load before training"
+        help="Path to pretrained model (.keras) to load before training"
     )
     parser.add_argument("--work_dir", type=str, default="./models", help="Directory to save the trained models")
     parser.add_argument("--save_freq", type=int, default=1, help="Frequency (in epochs) to save model checkpoints")
+    parser.add_argument(
+        "--disable_eval_on_train",
+        action="store_true",
+        help="If set, disables evaluations on the model on the training set after each epoch"
+    )
     
     args = parser.parse_args()
     main(args)

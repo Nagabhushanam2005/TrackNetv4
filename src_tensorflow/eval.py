@@ -8,11 +8,11 @@ It computes various metrics (accuracy, precision, recall, F1 score, and inferenc
 the results to a JSON file.
 
 Usage:
-    python src/eval.py --model_name <MODEL> --model_path <path_to_model> --dataset <dataset_name> \
+    python src/eval.py --model_path <path_to_model> --dataset <dataset_name> \
         [--batch_size <batch_size>] [--tol <tolerance>]
 
 Example:
-    python src/eval.py --model_name Baseline_TrackNetV2 --model_path ./models/model_final.pth \
+    python src/eval.py --model_path ./models/model_final.keras \
         --dataset tennis_game_level_split --batch_size 1 --tol 4
 
 Arguments:
@@ -34,12 +34,15 @@ import os
 import json
 import time
 import argparse
-import torch
-from torch.utils.data import DataLoader
+from tensorflow.keras.models import load_model
 
-from util import outcome, get_dataset, get_model
+from util import custom_loss, outcome, get_dataset, get_model
 from constants import HEIGHT, WIDTH
-from models.TrackNetV4_pt import TrackNetV4 as TrackNetV4_pt
+from models.TrackNetV4 import (
+    MotionPromptLayer,
+    FusionLayerTypeA,
+    FusionLayerTypeB
+)
 
 
 def evaluate_model(model_name, model_path, dataset, batch_size, tol, result_dir):
@@ -59,7 +62,6 @@ def evaluate_model(model_name, model_path, dataset, batch_size, tol, result_dir)
     """
     # Print experiment configurations
     evaluation_config = {
-        "model_name": model_name,
         "model_path": model_path,
         "dataset": dataset,
         "batch_size": batch_size,
@@ -72,64 +74,50 @@ def evaluate_model(model_name, model_path, dataset, batch_size, tol, result_dir)
     # Ensure the result directory exists
     os.makedirs(result_dir, exist_ok=True)
 
-    # Set up device
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    print(f"Using device: {device}")
-
     # Load the test dataset
-    _, test_dataset = get_dataset(dataset, HEIGHT, WIDTH)
-    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
+    test_dataset = get_dataset(dataset, "test")
 
     # Load model
-    model = get_model(model_name, HEIGHT, WIDTH)
-    model.load_state_dict(torch.load(model_path))
-    model.to(device)
-    model.eval()
+    model = get_model(model_name, HEIGHT, WIDTH, model_path)
 
     # Initialize counters for timing and evaluation metrics
     total_time_taken = 0
     total_frames = 0
-    TP = TN = FP = FN = 0
+    TP = TN = FP1 = FP2 = FN = 0
 
     # Evaluate the model over each batch in the dataset
-    with torch.no_grad():
-        for i, (x_data, y_data) in enumerate(test_loader):
-            x_data = x_data.float().to(device)
-            y_data = y_data.float()
+    for i, (x_data, y_data) in enumerate(test_dataset):
+        start_time = time.time()
+        # Run inference on the current batch
+        y_pred = model.predict(x_data, batch_size=batch_size)
+        elapsed_time = time.time() - start_time
+        total_time_taken += elapsed_time
 
-            start_time = time.time()
-            # Run inference on the current batch
-            if 'TrackNetV4' in model_name:
-                y_pred, _ = model(x_data)
-            else:
-                y_pred = model(x_data)
-            elapsed_time = time.time() - start_time
-            total_time_taken += elapsed_time
+        # Assuming each sample contains 3 frames; update total frames count
+        total_frames += len(x_data) * 3
 
-            # Assuming each sample contains 3 frames; update total frames count
-            total_frames += len(x_data) * 3
+        # Convert predictions to binary values using a threshold of 0.5
+        y_pred = (y_pred > 0.5).astype('float32')
 
-            # Convert predictions to binary values using a threshold of 0.5
-            y_pred = (y_pred.cpu() > 0.5)
+        # Compute outcomes: true positives, true negatives, and various false positives/negatives
+        tp, tn, fp1, fp2, fn = outcome(y_pred, y_data, tol)
+        print(f"Finished evaluating batch {i}: (TP, TN, FP1, FP2, FN) = {(tp, tn, fp1, fp2, fn)}")
 
-            # Compute outcomes: true positives, true negatives, and various false positives/negatives
-            tp, tn, fp, fn = outcome(y_pred, y_data, tol)
-            print(f"Finished evaluating batch {i}: (TP, TN, FP, FN) = {(tp, tn, fp, fn)}")
-
-            # Aggregate the results
-            TP += tp
-            TN += tn
-            FP += fp
-            FN += fn
+        # Aggregate the results
+        TP += tp
+        TN += tn
+        FP1 += fp1
+        FP2 += fp2
+        FN += fn
 
     # Calculate evaluation metrics while safely handling division by zero
     try:
-        accuracy = (TP + TN) / (TP + TN + FP + FN)
+        accuracy = (TP + TN) / (TP + TN + FP1 + FP2 + FN)
     except ZeroDivisionError:
         accuracy = 0
 
     try:
-        precision = TP / (TP + FP)
+        precision = TP / (TP + FP1 + FP2)
     except ZeroDivisionError:
         precision = 0
 
@@ -149,7 +137,8 @@ def evaluate_model(model_name, model_path, dataset, batch_size, tol, result_dir)
     # Output evaluation metrics
     print("Number of True Positives:", TP)
     print("Number of True Negatives:", TN)
-    print("Number of False Positives:", FP)
+    print("Number of False Positives FP1:", FP1)
+    print("Number of False Positives FP2:", FP2)
     print("Number of False Negatives:", FN)
     print("Accuracy:", accuracy)
     print("Precision:", precision)
@@ -161,7 +150,8 @@ def evaluate_model(model_name, model_path, dataset, batch_size, tol, result_dir)
     results = {
         "True Positives": TP,
         "True Negatives": TN,
-        "False Positives": FP,
+        "False Positives FP1": FP1,
+        "False Positives FP2": FP2,
         "False Negatives": FN,
         "Accuracy": accuracy,
         "Precision": precision,
@@ -173,7 +163,7 @@ def evaluate_model(model_name, model_path, dataset, batch_size, tol, result_dir)
     }
 
     # Create a JSON file name based on the model weights file name
-    model_file_name = os.path.basename(model_path).replace('.pth', '')
+    model_file_name = os.path.basename(model_path).replace('.keras', '')
     json_file_path = os.path.join(result_dir, f"{model_file_name}.json")
 
     # Save the results to a JSON file with proper indentation
@@ -199,7 +189,7 @@ if __name__ == "__main__":
         '--model_path',
         type=str,
         required=True,
-        help="Path to the model weights file (.pth) to load before evaluation."
+        help="Path to the model weights file (.keras) to load before evaluation."
     )
     parser.add_argument(
         '--dataset',
@@ -231,7 +221,6 @@ if __name__ == "__main__":
 
     # Call the evaluation function with the provided arguments
     evaluate_model(
-        args.model_name,
         args.model_path,
         args.dataset,
         args.batch_size,
