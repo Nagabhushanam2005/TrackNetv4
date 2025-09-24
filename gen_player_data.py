@@ -7,10 +7,11 @@ import numpy as np
 from ultralytics import YOLO
 from collections import deque
 
+
 class PlayerTracker:
     """Tracks a single player's trajectory and movement patterns."""
-    
-    def __init__(self, initial_position, player_id, history_length=None): # Allow unlimited history
+
+    def __init__(self, initial_position, player_id, history_length=None, exponential_prediction=True): # Allow unlimited history
         self.player_id = player_id
         self.position_history = deque([initial_position], maxlen=history_length)
         self.box_history = deque(maxlen=history_length) # To store bounding boxes
@@ -20,12 +21,13 @@ class PlayerTracker:
         self.frames_lost = 0
         self.total_movement = 0
         self.is_active = True
-        
+        self.exponential_prediction = exponential_prediction
+
     def update_position(self, new_position, confidence, box, frame_index):
         """Update player position and calculate velocity."""
         if len(self.position_history) > 0:
             velocity = (new_position[0] - self.position_history[-1][0], 
-                       new_position[1] - self.position_history[-1][1])
+                        new_position[1] - self.position_history[-1][1])
             self.velocity_history.append(velocity)
             
             # Calculate movement distance
@@ -37,22 +39,42 @@ class PlayerTracker:
         self.box_history.append(box)
         self.frame_history.append(frame_index)
         self.frames_lost = 0
-        
+
+    def current_position(self):
+        """Return the last known position of the player."""
+        return (self.position_history[-1] if self.position_history else None), \
+                (self.confidence_history[-1] if self.confidence_history else None), \
+                (self.box_history[-1] if self.box_history else None)
+
     def predict_next_position(self):
         """Predict next position based on velocity history."""
         if len(self.velocity_history) == 0:
             return self.position_history[-1]
-            
-        # Use weighted average of recent velocities (more recent = higher weight)
-        weights = np.array([i+1 for i in range(len(self.velocity_history))])
-        weights = weights / weights.sum()
-        
-        avg_velocity = np.average(self.velocity_history, axis=0, weights=weights)
+
+        # Convert deque → list for slicing
+        vel_hist = list(self.velocity_history)
+
+        if self.exponential_prediction:
+            # Take last 50 velocities
+            window = vel_hist[-50:]
+            n = len(window)
+            # Recent items get larger exponent → higher weight
+            weights = np.exp(np.linspace(-self.exponential_prediction, 0, n))
+            weights /= weights.sum()
+            avg_velocity = np.average(window, axis=0, weights=weights)
+        else:
+            window = vel_hist
+            weights = np.array([(i + 1) ** 2 for i in range(len(window))])
+            weights = weights / weights.sum()
+            avg_velocity = np.average(window, axis=0, weights=weights)
+
         predicted_pos = (
             self.position_history[-1][0] + avg_velocity[0],
             self.position_history[-1][1] + avg_velocity[1]
         )
         return predicted_pos
+
+
         
     def get_average_velocity(self):
         """Get average velocity magnitude over recent frames."""
@@ -108,7 +130,7 @@ def get_box_center(box):
     x1, y1, x2, y2 = box
     return ((x1 + x2) // 2, (y1 + y2) // 2)
 
-def process_frame(image_path, model, frame_index, player_trackers=None, max_distance=30, max_lost_frames=5, calibration_mode=False, all_trackers=None):
+def process_frame(image_path, model, frame_index, player_trackers=None, max_distance=30, max_lost_frames=5, calibration_mode=False, all_trackers=None, exponential_prediction=True):
     """
     Detects players in a single image using trajectory tracking for smooth capture.
     Distinguishes between active players and stationary entities like ball keepers.
@@ -162,7 +184,7 @@ def process_frame(image_path, model, frame_index, player_trackers=None, max_dist
         # Add new trackers for unmatched detections
         for idx, (conf, box, center) in enumerate(person_detections):
             if idx not in used_detections:
-                new_tracker = PlayerTracker(center, len(all_trackers))
+                new_tracker = PlayerTracker(center, len(all_trackers), exponential_prediction=exponential_prediction)
                 new_tracker.update_position(center, conf, box, frame_index)
                 all_trackers.append(new_tracker)
         
@@ -189,7 +211,7 @@ def process_frame(image_path, model, frame_index, player_trackers=None, max_dist
         person_detections.sort(reverse=True, key=lambda x: x[0])
         player_trackers = []
         for i, (conf, box, center) in enumerate(person_detections[:2]):
-            tracker = PlayerTracker(center, i)
+            tracker = PlayerTracker(center, i, exponential_prediction=exponential_prediction)
             tracker.update_position(center, conf, box, frame_index)
             player_trackers.append(tracker)
         selected_detections = [(conf, box) for conf, box, _ in person_detections[:2]]
@@ -203,7 +225,13 @@ def process_frame(image_path, model, frame_index, player_trackers=None, max_dist
         
         # Match detections to existing trackers
         for tracker in player_trackers:
+            # Predict next position and cap within frame boundaries
             predicted_pos = tracker.predict_next_position()
+
+            h, w, _ = img.shape
+            px = max(0, min(int(predicted_pos[0]), w - 1))
+            py = max(0, min(int(predicted_pos[1]), h - 1))
+            predicted_pos = (px, py)
             best_detection = None
             best_score = -1
             best_idx = -1
@@ -233,7 +261,7 @@ def process_frame(image_path, model, frame_index, player_trackers=None, max_dist
                     
                     combined_score = (confidence_score + distance_score + 
                                     prediction_score + movement_score + consistency_score)
-                    
+
                     if combined_score > best_score:
                         best_score = combined_score
                         best_detection = (confidence, box, center)
@@ -245,57 +273,70 @@ def process_frame(image_path, model, frame_index, player_trackers=None, max_dist
                 selected_detections.append((conf, (box[0], box[1], box[2], box[3])))
                 used_detections.add(best_idx)
             else:
+                print(f"Tracker {tracker.player_id} lost in frame {frame_index}")
                 tracker.frames_lost += 1
+                # use old detection into tracker
+                if len(tracker.position_history) > 0:
+                    predicted_pos = tracker.predict_next_position()
+                    last_pos, last_conf, last_box = tracker.current_position()
+                    # last_pos, last_conf, last_box = tracker.current_position()
+                    tracker.update_position(predicted_pos,
+                                            last_conf,
+                                            last_box, frame_index)
+                    selected_detections.append((last_conf, (last_box[0], last_box[1], last_box[2], last_box[3])))
+                else:
+                    # No history, cannot use old detection
+                    pass
         
-        # Add new trackers for unmatched high-confidence detections that show movement potential
-        remaining_detections = [(conf, box, center) for idx, (conf, box, center) in enumerate(person_detections) 
-                              if idx not in used_detections]
+        # # Add new trackers for unmatched high-confidence detections that show movement potential
+        # remaining_detections = [(conf, box, center) for idx, (conf, box, center) in enumerate(person_detections) 
+        #                       if idx not in used_detections]
         
-        if len(selected_detections) < 2 and remaining_detections:
-            # Filter remaining detections for movement potential
-            remaining_detections.sort(reverse=True, key=lambda x: x[0])
+        # if len(selected_detections) < 2 and remaining_detections:
+        #     # Filter remaining detections for movement potential
+        #     remaining_detections.sort(reverse=True, key=lambda x: x[0])
             
-            for conf, box, center in remaining_detections:
-                if len(selected_detections) >= 2:
-                    break
+        #     for conf, box, center in remaining_detections:
+        #         if len(selected_detections) >= 2:
+        #             break
                     
-                # Check if this detection is likely a moving player
-                is_potential_player = True
+        #         # Check if this detection is likely a moving player
+        #         is_potential_player = True
                 
-                # Check distance from existing stationary positions (if any)
-                for tracker in player_trackers:
-                    if (tracker.get_average_velocity() < 1.0 and  # Stationary tracker
-                        calculate_distance(center, tracker.position_history[-1]) < 10):  # Very close
-                        is_potential_player = False
-                        break
+        #         # Check distance from existing stationary positions (if any)
+        #         for tracker in player_trackers:
+        #             if (tracker.get_average_velocity() < 1.0 and  # Stationary tracker
+        #                 calculate_distance(center, tracker.position_history[-1]) < 10):  # Very close
+        #                 is_potential_player = False
+        #                 break
                 
-                if is_potential_player:
-                    # Create new tracker
-                    new_tracker = PlayerTracker(center, len(player_trackers))
-                    new_tracker.update_position(center, conf, box, frame_index)
-                    player_trackers.append(new_tracker)
-                    selected_detections.append((conf, (box[0], box[1], box[2], box[3])))
+        #         if is_potential_player:
+        #             # Create new tracker
+        #             new_tracker = PlayerTracker(center, len(player_trackers))
+        #             new_tracker.update_position(center, conf, box, frame_index)
+        #             player_trackers.append(new_tracker)
+        #             selected_detections.append((conf, (box[0], box[1], box[2], box[3])))
         
-        # Filter out trackers that are clearly not players (stationary for too long)
-        active_trackers = []
-        active_detections = []
+        # # Filter out trackers that are clearly not players (stationary for too long)
+        # active_trackers = []
+        # active_detections = []
         
-        for i, tracker in enumerate(player_trackers):
-            if i < len(selected_detections) and tracker.is_likely_player():
-                active_trackers.append(tracker)
-                active_detections.append(selected_detections[i])
+        # for i, tracker in enumerate(player_trackers):
+        #     if i < len(selected_detections) and tracker.is_likely_player():
+        #         active_trackers.append(tracker)
+        #         active_detections.append(selected_detections[i])
         
-        # If we filtered too many, add back the most confident ones
-        if len(active_detections) < min(2, len(selected_detections)):
-            for i, tracker in enumerate(player_trackers):
-                if len(active_detections) >= 2:
-                    break
-                if i < len(selected_detections) and tracker not in active_trackers:
-                    active_trackers.append(tracker)
-                    active_detections.append(selected_detections[i])
+        # # If we filtered too many, add back the most confident ones
+        # if len(active_detections) < min(2, len(selected_detections)):
+        #     for i, tracker in enumerate(player_trackers):
+        #         if len(active_detections) >= 2:
+        #             break
+        #         if i < len(selected_detections) and tracker not in active_trackers:
+        #             active_trackers.append(tracker)
+        #             active_detections.append(selected_detections[i])
         
-        player_trackers = active_trackers
-        selected_detections = active_detections
+        # player_trackers = active_trackers
+        # selected_detections = active_detections
 
     # Draw bounding boxes and trajectory trails
     colors = [(0, 255, 0), (255, 0, 0), (0, 0, 255), (255, 255, 0)]  # Different colors for different players
@@ -342,14 +383,14 @@ def process_frame(image_path, model, frame_index, player_trackers=None, max_dist
         
     return img, player_trackers, all_trackers
 
-def create_video_from_frames(input_folder, output_path, csv_path, fps=24, max_distance=30, max_lost_frames=5, device="auto", calibration_frames=10):
+def create_video_from_frames(input_folder, output_path, csv_path, fps=24, max_distance=30, max_lost_frames=5, device="auto", calibration_frames=10, exponential_prediction=True):
     """
     Processes all images in a folder, saves them as a video, and sorts them by name.
     Uses trajectory tracking for smooth player capture and filtering of stationary entities.
     """
     # Load the pre-trained YOLOv11 model once and move to GPU if available
     model = YOLO('yolo11x.pt')
-    
+    print("Exponential prediction is", "enabled" if exponential_prediction else "disabled")
     # Check for GPU availability and use it
     import torch
     
@@ -381,6 +422,14 @@ def create_video_from_frames(input_folder, output_path, csv_path, fps=24, max_di
         print(f"No images found in the specified folder: {input_folder}")
         return
 
+    # Adjust calibration frames for short videos
+    total_frames = len(image_files)
+    if total_frames < calibration_frames:
+        new_calibration_frames = total_frames * 2 // 3
+        print(f"Warning: Video has only {total_frames} frames, which is less than calibration_frames={calibration_frames}.")
+        print(f"Adjusting calibration_frames to {new_calibration_frames}.")
+        calibration_frames = new_calibration_frames
+
     # --- Calibration Phase ---
     print(f"--- Starting calibration for the first {calibration_frames} frames ---")
     all_trackers = []
@@ -403,7 +452,7 @@ def create_video_from_frames(input_folder, output_path, csv_path, fps=24, max_di
         image_path = os.path.join(input_folder, filename)
         processed_frame, _, all_trackers = process_frame(
             image_path, model, i, None, max_distance, max_lost_frames, 
-            calibration_mode=True, all_trackers=all_trackers
+            calibration_mode=True, all_trackers=all_trackers, exponential_prediction=exponential_prediction
         )
         if processed_frame is not None:
             # Optionally write calibration frames to video to see what's happening
@@ -442,7 +491,7 @@ def create_video_from_frames(input_folder, output_path, csv_path, fps=24, max_di
         image_path = os.path.join(input_folder, filename)
         processed_frame, player_trackers, _ = process_frame(
             image_path, model, i, player_trackers, max_distance, max_lost_frames,
-            calibration_mode=False
+            calibration_mode=False, exponential_prediction=exponential_prediction
         )
         if processed_frame is not None:
             video_writer.write(processed_frame)
@@ -503,6 +552,7 @@ if __name__ == "__main__":
     parser.add_argument("--max_lost_frames", type=int, default=10, help="Maximum frames a tracker can be lost before being dropped.")
     parser.add_argument("--device", type=str, default="auto", help="Device to use: 'cuda', 'cpu', or 'auto' (default: auto)")
     parser.add_argument("--calibration_frames", type=int, default=30, help="Number of initial frames to use for player selection calibration.")
+    parser.add_argument("--exponential_prediction", type=float, default=1, help="Whether to use exponential prediction for player tracking.")
 
     args = parser.parse_args()
     
@@ -517,5 +567,5 @@ if __name__ == "__main__":
             print(f"Forcing GPU usage")
         elif args.device == "cpu":
             print(f"Forcing CPU usage")
-    
-    create_video_from_frames(args.input_folder, args.output_path, args.csv_path, args.fps, args.max_distance, args.max_lost_frames, device_to_use, args.calibration_frames)
+
+    create_video_from_frames(args.input_folder, args.output_path, args.csv_path, args.fps, args.max_distance, args.max_lost_frames, device_to_use, args.calibration_frames, args.exponential_prediction)
