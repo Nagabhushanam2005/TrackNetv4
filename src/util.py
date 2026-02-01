@@ -6,10 +6,10 @@ import math
 import numpy as np
 import cv2
 import torch
-from constants import BADMINTON_DATASET_ROOT, TENNIS_DATASET_ROOT, NEW_TENNIS_DATASET_ROOT, WIDTH, HEIGHT
-from models.TrackNetV2_pt import TrackNetV2 as TrackNetV2_pt
-from models.TrackNetV4_pt import TrackNetV4 as TrackNetV4_pt
-from models.TrackNetV5 import TrackNetV5 as TrackNetV5_pt
+from .constants import BADMINTON_DATASET_ROOT, TENNIS_DATASET_ROOT, NEW_TENNIS_DATASET_ROOT, WIDTH, HEIGHT
+from .models.TrackNetV2_pt import TrackNetV2 as TrackNetV2_pt
+from .models.TrackNetV4_pt import TrackNetV4 as TrackNetV4_pt
+from .models.TrackNetV5 import TrackNetV5 as TrackNetV5_pt
 
 ####################################
 # Dataset related helper functions #

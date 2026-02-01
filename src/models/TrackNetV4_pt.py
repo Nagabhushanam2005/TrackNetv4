@@ -54,16 +54,16 @@ class MotionPromptLayer(nn.Module):
         return attention_map, loss
 
 class FusionLayerTypeA(nn.Module):
-    def forward(self, inputs):
-        feature_map, attention_map = inputs
+    def forward(self, feature_map, attention_map):
+        # feature_map, attention_map = inputs
         output_1 = feature_map[:, 0, :, :]
         output_2 = feature_map[:, 1, :, :] * attention_map[:, 0, :, :]
         output_3 = feature_map[:, 2, :, :] * attention_map[:, 1, :, :]
         return torch.stack([output_1, output_2, output_3], dim=1)
 
 class FusionLayerTypeB(nn.Module):
-    def forward(self, inputs):
-        feature_map, attention_map = inputs
+    def forward(self, feature_map, attention_map):
+        # feature_map, attention_map = inputs
         output_1 = feature_map[:, 0, :, :] * attention_map[:, 0, :, :]
         output_2 = feature_map[:, 1, :, :] * ((attention_map[:, 0, :, :] + attention_map[:, 1, :, :])/2)
         output_3 = feature_map[:, 2, :, :] * attention_map[:, 1, :, :]
@@ -165,7 +165,7 @@ class TrackNetV4(nn.Module):
         # For now, we will proceed without the fusion layer to have a runnable model.
         
         x = self.conv18[0](x7) # Apply Conv2d(64, 3, 1, padding=0)
-        x = self.fusion_layer([x, residual_maps])
+        x = self.fusion_layer(x, residual_maps)
         out = self.conv18[1](x) # Apply Sigmoid
         
         return out, motion_loss
