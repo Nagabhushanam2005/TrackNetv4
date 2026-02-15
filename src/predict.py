@@ -20,7 +20,6 @@ from PIL import Image
 from collections import deque
 from models.TrackNetV2_pt import TrackNetV2 as TrackNetV2_pt
 from models.TrackNetV4_pt import TrackNetV4 as TrackNetV4_pt
-from models.TrackNetV5 import TrackNetV5
 from util import get_model
 from constants import HEIGHT, WIDTH
 
@@ -60,15 +59,13 @@ def run_model_inference(model, frames, device):
     # Perform prediction
     inference_start_time = time.time()
     with torch.no_grad():
-        if isinstance(model, TrackNetV5):
-            ball_preds, player_preds, _ = model(input_tensor)
-            predictions = (ball_preds.cpu(), player_preds.cpu())
-        elif isinstance(model, TrackNetV4_pt):
-            ball_preds, _ = model(input_tensor)
-            predictions = (ball_preds.cpu(), None)
+        model_output = model(input_tensor)
+        # Handle different model outputs (TrackNetV4 returns tuple with motion_loss)
+        if isinstance(model_output, tuple):
+            ball_preds, _ = model_output  # Unpack (predictions, motion_loss)
         else:
-            ball_preds = model(input_tensor)
-            predictions = (ball_preds.cpu(), None)
+            ball_preds = model_output
+        predictions = (ball_preds.cpu(), None)
     inference_end_time = time.time()
 
     inference_time = inference_end_time - inference_start_time
@@ -191,7 +188,7 @@ def main(args):
 
     # Load model
     model = get_model(model_name, INPUT_HEIGHT, INPUT_WIDTH)
-    model.load_state_dict(torch.load(model_weights))
+    model.load_state_dict(torch.load(model_weights, map_location=device))
     model.to(device)
     model.eval()
 
@@ -221,9 +218,6 @@ def main(args):
     
     with open(ball_csv_path, 'w') as csv_file:
         csv_file.write("frame,x,y,visibility\n")
-    if 'TrackNetV5' in model_name:
-        with open(player_csv_path, 'w') as csv_file:
-            csv_file.write("frame,x1,y1,x2,y2\n")
 
 
     # Initialize queues
@@ -291,7 +285,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Predict trajectories on video using a trained model.")
     parser.add_argument("--video_path", type=str, required=True, help="Path to the input video.")
     parser.add_argument("--model_weights", type=str, required=True, help="Path to the trained model weights (.pth).")
-    parser.add_argument("--model_name", type=str, required=True, choices=['Baseline_TrackNetV2', 'TrackNetV4_TypeA', 'TrackNetV4_TypeB', 'TrackNetV5_TypeA', 'TrackNetV5_TypeB'], help="Name of the model to use.")
+    parser.add_argument("--model_name", type=str, required=True, choices=['Baseline_TrackNetV2', 'TrackNetV4_TypeA', 'TrackNetV4_TypeB'], help="Name of the model to use.")
     parser.add_argument("--output_dir", type=str, required=True, help="Directory to save the output video and CSV.")
     parser.add_argument("--queue_length", type=int, default=10, help="Length of the trajectory queue.")
     
