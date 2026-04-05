@@ -6,45 +6,18 @@ import math
 import numpy as np
 import cv2
 import torch
-
-# Handle both package and direct imports
 try:
     from .constants import BADMINTON_DATASET_ROOT, TENNIS_DATASET_ROOT, NEW_TENNIS_DATASET_ROOT, WIDTH, HEIGHT
-except ImportError:
+    from .models.TrackNetV2_pt import TrackNetV2 as TrackNetV2_pt
+    from .models.TrackNetV4_pt import TrackNetV4 as TrackNetV4_pt
+    from .models.TrackNetV5 import TrackNetV5 as TrackNetV5_pt
+    from .models.TrackNetv4_EfficientNet import TrackNetV4_EfficientNet_B0
+except:
     from constants import BADMINTON_DATASET_ROOT, TENNIS_DATASET_ROOT, NEW_TENNIS_DATASET_ROOT, WIDTH, HEIGHT
-
-# Lazy load models to avoid import issues
-TrackNetV2_pt = None
-TrackNetV4_pt = None
-TrackNetV4_EfficientUNet = None
-
-def _load_models():
-    """Lazy load model classes."""
-    global TrackNetV2_pt, TrackNetV4_pt, TrackNetV4_EfficientUNet
-    
-    if TrackNetV2_pt is None:
-        try:
-            from .models.TrackNetV2_pt import TrackNetV2 as _TrackNetV2_pt
-            TrackNetV2_pt = _TrackNetV2_pt
-        except ImportError:
-            from models.TrackNetV2_pt import TrackNetV2 as _TrackNetV2_pt
-            TrackNetV2_pt = _TrackNetV2_pt
-    
-    if TrackNetV4_pt is None:
-        try:
-            from .models.TrackNetV4_pt import TrackNetV4 as _TrackNetV4_pt
-            TrackNetV4_pt = _TrackNetV4_pt
-        except ImportError:
-            from models.TrackNetV4_pt import TrackNetV4 as _TrackNetV4_pt
-            TrackNetV4_pt = _TrackNetV4_pt
-    
-    if TrackNetV4_EfficientUNet is None:
-        try:
-            from .models.TrackNetv4_EfficientNet import TrackNetV4_EfficientUNet as _TrackNetV4_EfficientUNet
-            TrackNetV4_EfficientUNet = _TrackNetV4_EfficientUNet
-        except ImportError:
-            from models.TrackNetv4_EfficientNet import TrackNetV4_EfficientUNet as _TrackNetV4_EfficientUNet
-            TrackNetV4_EfficientUNet = _TrackNetV4_EfficientUNet
+    from models.TrackNetV2_pt import TrackNetV2 as TrackNetV2_pt
+    from models.TrackNetV4_pt import TrackNetV4 as TrackNetV4_pt
+    from models.TrackNetV5 import TrackNetV5 as TrackNetV5_pt
+    from models.TrackNetv4_EfficientNet import TrackNetV4_EfficientNet_B0
 ####################################
 # Dataset related helper functions #
 ####################################
@@ -130,47 +103,26 @@ def get_model(model_name, height=HEIGHT, width=WIDTH):
     """
     Returns the specified model.
     """
-    global TrackNetV2_pt, TrackNetV4_pt, TrackNetV4_EfficientUNet
-    _load_models()
-    
     if model_name == 'Baseline_TrackNetV2':
         return TrackNetV2_pt(height, width)
     elif model_name == 'TrackNetV4_TypeA':
         return TrackNetV4_pt(height, width, fusion_layer_type='TypeA')
     elif model_name == 'TrackNetV4_TypeB':
         return TrackNetV4_pt(height, width, fusion_layer_type='TypeB')
+    elif model_name == 'TrackNetV5_TypeA':
+        return TrackNetV5_pt(height, width, fusion_layer_type='TypeA')
+    elif model_name == 'TrackNetV5_TypeB':
+        return TrackNetV5_pt(height, width, fusion_layer_type='TypeB')
     elif model_name == 'TrackNetV4_EfficientNet_B0':
-        return TrackNetV4_EfficientUNet(height, width, fusion_layer_type='TypeA', width_mult=1.0, depth_mult=1.0)
-    elif model_name == 'TrackNetV4_EfficientNet_B1':
-        return TrackNetV4_EfficientUNet(height, width, fusion_layer_type='TypeA', width_mult=1.0, depth_mult=1.1)
-    elif model_name == 'TrackNetV4_EfficientNet_Lite':
-        return TrackNetV4_EfficientUNet(height, width, fusion_layer_type='TypeA', width_mult=0.75, depth_mult=0.75)
+        return TrackNetV4_EfficientNet_B0(height, width, fusion_layer_type='TypeA')
     else:
         raise ValueError(f"Unknown model name: {model_name}")
 
-def get_dataset(dataset_name, height=HEIGHT, width=WIDTH, subset_fraction=1.0, use_lazy=True):
+def get_dataset(dataset_name, height=HEIGHT, width=WIDTH):
     """
     Returns the specified dataset.
-    
-    Args:
-        dataset_name: Name of the dataset
-        height: Target image height
-        width: Target image width
-        subset_fraction: Fraction of dataset to use (for convergence testing)
-        use_lazy: If True, use lazy-loading dataset (recommended for limited RAM/SSD)
     """
-    if use_lazy:
-        try:
-            from .dataset_lazy import get_lazy_dataset
-        except ImportError:
-            from dataset_lazy import get_lazy_dataset
-        return get_lazy_dataset(dataset_name, height, width, subset_fraction)
-    
-    # Legacy: Use preprocessed dataset (requires preprocessing first)
-    try:
-        from .dataset import TennisDataset
-    except ImportError:
-        from dataset import TennisDataset
+    from dataset import TennisDataset
 
     if dataset_name == 'tennis_game_level_split':
         train_ds = TennisDataset(root_dir=TENNIS_DATASET_ROOT, mode='train', split_type='game_level', target_img_height=height, target_img_width=width)

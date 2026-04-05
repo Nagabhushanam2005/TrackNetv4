@@ -149,7 +149,7 @@ def main(args):
 
                 running_loss += loss.item()
             
-            if (i  + 1) % 10 == 0:
+            if (i  + 1) % 100 == 0:
                 print(f'Epoch [{epoch+1}/{epochs}], Step [{i+1}/{len(train_loader)}], Avg Clip Loss: {running_loss / 10:.4f}')
                 running_loss = 0.0
 

@@ -17,7 +17,7 @@ def reverse_rearrange_tensor(input_tensor, order):
     return input_tensor.permute(*["BTCHW".index(dim) for dim in order])
 
 def power_normalization(input, a, b):
-    return 1 / (1 + torch.exp(-(5 / (0.45 * torch.abs(torch.tanh(a)) + 1e-1)) * (torch.abs(input) - 0.6 * torch.tanh(b))))
+    return 1 / (1 + torch.exp(-(5 / (0.45 * torch.abs(torch.tanh(a)) +1e-5)) * (torch.abs(input) - 0.6 * torch.tanh(b))))
 
 class MotionPromptLayer(nn.Module):
     def __init__(self, penalty_weight=0.0):

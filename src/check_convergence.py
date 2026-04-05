@@ -495,7 +495,11 @@ if __name__ == "__main__":
     parser.add_argument('--model_name', type=str, required=True,
                         choices=['Baseline_TrackNetV2', 'TrackNetV4_TypeA', 'TrackNetV4_TypeB',
                                  'TrackNetV4_EfficientNet_B0', 'TrackNetV4_EfficientNet_B1', 
-                                 'TrackNetV4_EfficientNet_Lite'],
+                                 'TrackNetV4_EfficientNet_Lite',
+                                 'TrackNetV4_CSPNeXt_nano', 'TrackNetV4_CSPNeXt_tiny',
+                                 'TrackNetV4_CSPNeXt_small', 'TrackNetV4_CSPNeXt_medium',
+                                 'TrackNetV4_CSPNeXt_large',
+                                 'TrackNetV4Plus_Lite', 'TrackNetV4Plus_Standard', 'TrackNetV4Plus_Large'],
                         help="Name of the model to test")
     parser.add_argument('--dataset', type=str, default='tennis_game_level_split',
                         choices=['tennis_game_level_split', 'tennis_clip_level_split'],

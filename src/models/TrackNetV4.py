@@ -95,7 +95,7 @@ class MotionPromptLayer(Layer):
 
 # Power normalization function
 def power_normalization(input, a, b):
-    return 1 / (1 + tf.exp(-(5 / (0.45 * tf.abs(tf.tanh(a)) + 1e-1)) * (tf.abs(input) - 0.6 * tf.tanh(b))))
+    return 1 / (1 + tf.exp(-(5 / (0.45 * tf.abs(tf.tanh(a)) +1e-5)) * (tf.abs(input) - 0.6 * tf.tanh(b))))
 
 # Motion fusion layers
 class FusionLayerTypeA(Layer):

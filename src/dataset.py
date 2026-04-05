@@ -234,7 +234,7 @@ class TennisDataset(BaseDataset):
                         tasks.append((game, clip, game_folder, save_data_dir, count))
                         seen.add(key)
                         count += 1
-            with concurrent.futures.ThreadPoolExecutor() as executor:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
                 list(executor.map(process_clip_wrapper, tasks))
         else:
             # set_data is a list of games; process all clips in each game folder.
@@ -251,7 +251,7 @@ class TennisDataset(BaseDataset):
                         tasks.append((game, clip, game_folder, save_data_dir, count))
                         seen.add(key)
                         count += 1
-            with concurrent.futures.ThreadPoolExecutor() as executor:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
                 list(executor.map(process_clip_wrapper, tasks))
     
     def _save_data(self, save_dir, count, x_data, y_data):

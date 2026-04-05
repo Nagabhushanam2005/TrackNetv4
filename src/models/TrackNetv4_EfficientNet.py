@@ -15,7 +15,7 @@ def reverse_rearrange_tensor(input_tensor, order):
     return input_tensor.permute(*["BTCHW".index(dim) for dim in order])
 
 def power_normalization(input, a, b):
-    return 1 / (1 + torch.exp(-(5 / (0.45 * torch.abs(torch.tanh(a)) + 1e-1)) * (torch.abs(input) - 0.6 * torch.tanh(b))))
+    return 1 / (1 + torch.exp(-(5 / (0.45 * torch.abs(torch.tanh(a)) + 1e-5)) * (torch.abs(input) - 0.6 * torch.tanh(b))))
 
 class MotionPromptLayer(nn.Module):
     def __init__(self, penalty_weight=0.0):
@@ -52,6 +52,7 @@ class MotionPromptLayer(nn.Module):
             temporal_loss = torch.sum(torch.square(temp_diff)) / (H * W * (T - 2) * B)
             loss = self.lambda1 * temporal_loss
 
+        # print(f"MotionPromptLayer - map shape: {attention_map.shape}, loss: {loss.item():.6f}")
         return attention_map, loss
 
 class FusionLayerTypeA(nn.Module):
@@ -429,9 +430,9 @@ if __name__ == "__main__":
     print("Testing TrackNetV4_EfficientUNet variants...\n")
     
     variants = [
-        ("EfficientNet-Lite (0.75×)", 0.75, 0.75),
-        ("EfficientNet-B0 (1.0×)", 1.0, 1.0),
-        ("EfficientNet-B1 (1.1× depth)", 1.0, 1.1),
+        # ("EfficientNet-Lite (0.75x)", 0.75, 0.75),
+        ("EfficientNet-B0 (1.0x)", 1.0, 1.0),
+        ("EfficientNet-B1 (1.1x depth)", 1.0, 1.1),
     ]
     
     for name, width_mult, depth_mult in variants:

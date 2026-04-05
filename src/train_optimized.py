@@ -39,11 +39,16 @@ import sys
 import time
 import gc
 import json
+import random
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import cv2
+import numpy as np
 from torch.utils.data import DataLoader
 from torch.cuda.amp import autocast, GradScaler
+from PIL import Image
+from torchvision.transforms import ToTensor
 
 # Add src to path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -58,6 +63,131 @@ def clear_memory():
     gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
+
+
+def save_validation_clip_video(model, val_dataset, device, work_dir, epoch, height, width, use_amp=True, num_samples=30, fps=30):
+    """
+    Save a random validation clip as a video with model predictions overlaid.
+    
+    Args:
+        model: The trained model
+        val_dataset: Validation dataset
+        device: Device to run inference on
+        work_dir: Directory to save the video
+        epoch: Current epoch number
+        height: Input height for model
+        width: Input width for model
+        use_amp: Whether to use automatic mixed precision
+        num_samples: Number of consecutive samples to include in the video (default 30 for ~1 second)
+        fps: Frames per second for output video
+    """
+    model.eval()
+    
+    # Pick a random starting point in the validation dataset
+    max_start = max(0, len(val_dataset) - num_samples)
+    if max_start == 0:
+        start_idx = 0
+        num_samples = len(val_dataset)
+    else:
+        start_idx = random.randint(0, max_start)
+    
+    # Try to find consecutive samples from the same clip
+    # Get the initial sample to find game/clip
+    first_sample_info = val_dataset.samples[start_idx]
+    target_game = first_sample_info['game']
+    target_clip = first_sample_info['clip']
+    
+    # Find consecutive samples from the same clip
+    clip_indices = []
+    for i in range(start_idx, min(start_idx + num_samples * 3, len(val_dataset))):
+        sample_info = val_dataset.samples[i]
+        if sample_info['game'] == target_game and sample_info['clip'] == target_clip:
+            clip_indices.append(i)
+        if len(clip_indices) >= num_samples:
+            break
+    
+    if len(clip_indices) < 3:
+        print(f"  Warning: Could not find enough consecutive samples for video")
+        return None
+    
+    # Set up video writer
+    video_path = os.path.join(work_dir, f"val_clip_epoch_{epoch}.mp4")
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    video_writer = cv2.VideoWriter(video_path, fourcc, fps, (width, height))
+    
+    transform = ToTensor()
+    
+    with torch.no_grad():
+        for idx in clip_indices:
+            sample_info = val_dataset.samples[idx]
+            frame_paths = sample_info['frame_paths']
+            ball_coords = sample_info['ball_coords']
+            
+            # Load frames for inference
+            frames_sequence = []
+            original_frames = []
+            for frame_path in frame_paths:
+                img = Image.open(frame_path)
+                img = img.resize((width, height), Image.BILINEAR)
+                original_frames.append(np.array(img))
+                img_tensor = transform(img)
+                frames_sequence.append(img_tensor)
+            
+            # Stack frames: (3, 3, H, W) -> (9, H, W)
+            x_tensor = torch.stack(frames_sequence, dim=0)
+            x_tensor = x_tensor.view(-1, height, width).unsqueeze(0).float().to(device)
+            
+            # Run inference
+            if use_amp:
+                with autocast():
+                    outputs = model(x_tensor)
+            else:
+                outputs = model(x_tensor)
+            
+            if isinstance(outputs, tuple):
+                outputs = outputs[0]
+            
+            # Get predictions as numpy
+            preds = outputs.cpu().squeeze(0).numpy()  # (3, H, W)
+            
+            # Only process the middle frame to avoid duplicate frames in video
+            frame_idx = 1  # Middle frame
+            frame = original_frames[frame_idx].copy()
+            frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+            
+            pred_heatmap = preds[frame_idx]
+            gt_coord = ball_coords[frame_idx]
+            
+            # Find predicted ball position
+            binary_pred = (pred_heatmap > 0.5).astype(np.uint8) * 255
+            if np.max(binary_pred) > 0:
+                contours, _ = cv2.findContours(binary_pred, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                if contours:
+                    largest = max(contours, key=cv2.contourArea)
+                    x, y, w, h = cv2.boundingRect(largest)
+                    pred_x = int(x + w / 2)
+                    pred_y = int(y + h / 2)
+                    # Draw predicted position (green circle)
+                    cv2.circle(frame_bgr, (pred_x, pred_y), 5, (0, 255, 0), -1)
+                    cv2.circle(frame_bgr, (pred_x, pred_y), 8, (0, 255, 0), 2)
+            
+            # Draw ground truth position (red circle)
+            if gt_coord['visible']:
+                gt_x, gt_y = gt_coord['x'], gt_coord['y']
+                cv2.circle(frame_bgr, (gt_x, gt_y), 5, (0, 0, 255), -1)
+                cv2.circle(frame_bgr, (gt_x, gt_y), 8, (0, 0, 255), 2)
+            
+            # Add epoch label
+            cv2.putText(frame_bgr, f"Epoch {epoch}", (10, 25), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+            cv2.putText(frame_bgr, "Green: Pred, Red: GT", (10, 50), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+            
+            video_writer.write(frame_bgr)
+    
+    video_writer.release()
+    print(f"  Validation clip saved: {video_path}")
+    return video_path
 
 
 def save_checkpoint(model, optimizer, scheduler, scaler, epoch, train_losses, val_losses, work_dir, model_name):
@@ -431,6 +561,15 @@ def main(args):
                 work_dir, model_name
             )
             print(f"Checkpoint saved: {model_save_path}")
+            
+            # Save validation clip video for visual inspection
+            try:
+                save_validation_clip_video(
+                    model, val_dataset, device, work_dir, 
+                    epoch + 1, height, width, use_amp
+                )
+            except Exception as e:
+                print(f"  Warning: Could not save validation video: {e}")
         
         # Save best model
         if avg_val_loss < best_val_loss:
@@ -461,7 +600,9 @@ if __name__ == "__main__":
     
     # Model and dataset
     parser.add_argument('--model_name', type=str, required=True,
-                        choices=['Baseline_TrackNetV2', 'TrackNetV4_TypeA', 'TrackNetV4_TypeB'],
+                        choices=['Baseline_TrackNetV2', 'TrackNetV4_TypeA', 'TrackNetV4_TypeB',
+                                 'TrackNetV4_EfficientNet_B0', 'TrackNetV4_EfficientNet_B1', 'TrackNetV4_EfficientNet_Lite',
+                                 'TrackNetV4Plus_Lite', 'TrackNetV4Plus_Standard', 'TrackNetV4Plus_Large'],
                         help="Name of the model to use")
     parser.add_argument('--dataset', type=str, required=True,
                         choices=['tennis_game_level_split', 'tennis_clip_level_split'],
