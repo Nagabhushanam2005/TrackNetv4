@@ -382,8 +382,9 @@ def main(args):
         scaler = GradScaler() if use_amp else None
         train_losses, val_losses = [], []
     
-    # Loss function
+    # Loss functions
     criterion = nn.BCELoss()
+    logits_criterion = nn.BCEWithLogitsLoss()
     
     # Training loop
     print("\n" + "=" * 60)
@@ -392,7 +393,10 @@ def main(args):
     
     best_val_loss = float('inf')
     
+    outputs_are_logits = None
+
     for epoch in range(start_epoch, epochs):
+        logits_detected_batches = 0
         epoch_start_time = time.time()
         model.train()
         
@@ -421,7 +425,18 @@ def main(args):
                     else:
                         target_labels = labels
                     
-                    loss = criterion(outputs.float(), target_labels.float())
+                    if outputs_are_logits is None:
+                        with torch.no_grad():
+                            outputs_min = outputs.min().item()
+                            outputs_max = outputs.max().item()
+                        outputs_are_logits = (outputs_min < 0.0) or (outputs_max > 1.0)
+                        if outputs_are_logits:
+                            logits_detected_batches += 1
+
+                    if outputs_are_logits:
+                        loss = logits_criterion(outputs.float(), target_labels.float())
+                    else:
+                        loss = criterion(outputs.float(), target_labels.float())
                     if isinstance(motion_loss, torch.Tensor) and motion_loss.numel() > 0:
                         loss = loss + motion_loss.mean()
                 else:
@@ -429,7 +444,18 @@ def main(args):
                         target_labels = labels[:, :, 0, :, :]
                     else:
                         target_labels = labels
-                    loss = criterion(outputs.float(), target_labels.float())
+                    if outputs_are_logits is None:
+                        with torch.no_grad():
+                            outputs_min = outputs.min().item()
+                            outputs_max = outputs.max().item()
+                        outputs_are_logits = (outputs_min < 0.0) or (outputs_max > 1.0)
+                        if outputs_are_logits:
+                            logits_detected_batches += 1
+
+                    if outputs_are_logits:
+                        loss = logits_criterion(outputs.float(), target_labels.float())
+                    else:
+                        loss = criterion(outputs.float(), target_labels.float())
                 
                 # Scale loss for gradient accumulation
                 loss = loss / gradient_accumulation_steps
@@ -523,11 +549,24 @@ def main(args):
                 else:
                     target_labels = labels
                 
-                val_loss += criterion(outputs.float(), target_labels.float()).item()
+                if outputs_are_logits is None:
+                    with torch.no_grad():
+                        outputs_min = outputs.min().item()
+                        outputs_max = outputs.max().item()
+                    outputs_are_logits = (outputs_min < 0.0) or (outputs_max > 1.0)
+                    if outputs_are_logits:
+                        logits_detected_batches += 1
+
+                if outputs_are_logits:
+                    val_loss += logits_criterion(outputs.float(), target_labels.float()).item()
+                    pred_probs = torch.sigmoid(outputs)
+                else:
+                    val_loss += criterion(outputs.float(), target_labels.float()).item()
+                    pred_probs = outputs
                 val_batches += 1
                 
                 # Calculate metrics
-                preds = (outputs > 0.5).cpu()
+                preds = (pred_probs > 0.5).cpu()
                 t, n, p, f = outcome(target_labels.cpu(), preds, tol)
                 tp += t
                 tn += n
@@ -551,6 +590,8 @@ def main(args):
         print(f"  TP: {tp}, TN: {tn}, FP: {fp}, FN: {fn}")
         print(f"  Accuracy: {accuracy:.4f}, Precision: {precision:.4f}, Recall: {recall:.4f}, F1: {f1:.4f}")
         print(f"  Time: {epoch_time:.1f}s")
+        if logits_detected_batches > 0:
+            print(f"  Logits-detected batches: {logits_detected_batches}")
         print()
         
         # Save checkpoint

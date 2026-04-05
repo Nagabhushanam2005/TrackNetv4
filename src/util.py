@@ -10,12 +10,14 @@ try:
     from .constants import BADMINTON_DATASET_ROOT, TENNIS_DATASET_ROOT, NEW_TENNIS_DATASET_ROOT, WIDTH, HEIGHT
     from .models.TrackNetV2_pt import TrackNetV2 as TrackNetV2_pt
     from .models.TrackNetV4_pt import TrackNetV4 as TrackNetV4_pt
+    from .models.TrackNetV4_CSPNeXt import TrackNetV4_CSPNeXt_BallTracking
     from .models.TrackNetV5 import TrackNetV5 as TrackNetV5_pt
     from .models.TrackNetv4_EfficientNet import TrackNetV4_EfficientNet_B0
 except:
     from constants import BADMINTON_DATASET_ROOT, TENNIS_DATASET_ROOT, NEW_TENNIS_DATASET_ROOT, WIDTH, HEIGHT
     from models.TrackNetV2_pt import TrackNetV2 as TrackNetV2_pt
     from models.TrackNetV4_pt import TrackNetV4 as TrackNetV4_pt
+    from models.TrackNetV4_CSPNeXt import TrackNetV4_CSPNeXt_BallTracking
     from models.TrackNetV5 import TrackNetV5 as TrackNetV5_pt
     from models.TrackNetv4_EfficientNet import TrackNetV4_EfficientNet_B0
 ####################################
@@ -109,6 +111,12 @@ def get_model(model_name, height=HEIGHT, width=WIDTH):
         return TrackNetV4_pt(height, width, fusion_layer_type='TypeA')
     elif model_name == 'TrackNetV4_TypeB':
         return TrackNetV4_pt(height, width, fusion_layer_type='TypeB')
+    elif model_name == 'TrackNetV4_CSPNeXt_TypeA':
+        return TrackNetV4_CSPNeXt_BallTracking(height, width, fusion_layer_type='TypeA',deepen_factor=0.67,
+                widen_factor=0.75)
+    elif model_name == 'TrackNetV4_CSPNeXt_TypeB':
+        return TrackNetV4_CSPNeXt_BallTracking(height, width, fusion_layer_type='TypeB',deepen_factor=0.67,
+                widen_factor=0.75)
     elif model_name == 'TrackNetV5_TypeA':
         return TrackNetV5_pt(height, width, fusion_layer_type='TypeA')
     elif model_name == 'TrackNetV5_TypeB':

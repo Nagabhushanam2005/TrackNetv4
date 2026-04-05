@@ -227,7 +227,7 @@ if __name__ == "__main__":
         '--model_name',
         type=str,
         required=True,
-        choices=['Baseline_TrackNetV2', 'TrackNetV4_TypeA', 'TrackNetV4_TypeB', 'TrackNetV5_TypeA', 'TrackNetV5_TypeB'],
+        choices=['Baseline_TrackNetV2', 'TrackNetV4_TypeA', 'TrackNetV4_TypeB', 'TrackNetV4_CSPNeXt_TypeA', 'TrackNetV4_CSPNeXt_TypeB', 'TrackNetV5_TypeA', 'TrackNetV5_TypeB'],
         help="Name of the model to use."
     )
     parser.add_argument(
