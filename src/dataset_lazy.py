@@ -70,6 +70,7 @@ class PerSampleDataset(Dataset):
         mag=MAG,
         sigma=SIGMA,
         subset_fraction=1.0,
+        use_augmentation=False,
         shuffle_index=False,
     ):
         self.root_dir = root_dir
@@ -81,6 +82,7 @@ class PerSampleDataset(Dataset):
         self.mag = mag
         self.sigma = sigma
         self.subset_fraction = subset_fraction
+        self.use_augmentation = use_augmentation
         
         self.transform = ToTensor()
         
@@ -96,6 +98,14 @@ class PerSampleDataset(Dataset):
             num_samples = int(len(self.samples) * self.subset_fraction)
             self.samples = self.samples[:max(1, num_samples)]
         
+        # Double the index: each original sample is followed by its flipped twin.
+        # A sample is a flip if its index in the doubled list is >= len(original).
+        # We store the original length and derive flip flag from __getitem__ idx.
+        if self.use_augmentation:
+            self._base_len = len(self.samples)
+            self.samples = self.samples + self.samples  # duplicate list
+        else:
+            self._base_len = len(self.samples)
         # Optionally shuffle the index
         if shuffle_index:
             import random
@@ -265,9 +275,12 @@ class PerSampleDataset(Dataset):
     def __getitem__(self, idx):
         """Load a single sample (3 consecutive frames) on-demand."""
         sample_info = self.samples[idx]
-        return self._load_sample(sample_info)
+        # Second half of the doubled list => apply horizontal flip
+        do_hflip = self.use_augmentation and (idx >= self._base_len)
+        return self._load_sample(sample_info, do_hflip=do_hflip)
+
     
-    def _load_sample(self, sample_info):
+    def _load_sample(self, sample_info, do_hflip=False):
         """Load a single sample from disk."""
         frame_paths = sample_info['frame_paths']
         ball_coords = sample_info['ball_coords']
@@ -283,6 +296,8 @@ class PerSampleDataset(Dataset):
             img = Image.open(frame_path)
             img = img.resize((self.target_img_width, self.target_img_height), Image.BILINEAR)
             img_tensor = self.transform(img)
+            if do_hflip:
+                img = img.transpose(Image.FLIP_LEFT_RIGHT)
             frames_sequence.append(img_tensor)
         
         # Stack frames: (3, 3, H, W) -> (9, H, W)
@@ -295,9 +310,10 @@ class PerSampleDataset(Dataset):
             if not coord['visible']:
                 heatmap = genHeatMap(self.target_img_width, self.target_img_height, -1, -1, self.sigma, self.mag)
             else:
+                x = (self.target_img_width - 1 - coord['x']) if do_hflip else coord['x']
                 heatmap = genHeatMap(
                     self.target_img_width, self.target_img_height,
-                    coord['x'], coord['y'],
+                    x, coord['y'],
                     self.sigma, self.mag
                 )
             heatmap_sequence.append(heatmap)
@@ -332,6 +348,9 @@ class PerSampleDataset(Dataset):
                             cv2.rectangle(player_heatmap, (x1, y1), (x2, y2), 1.0, thickness=-1)
                     except (ValueError, KeyError):
                         pass
+
+                    if do_hflip:
+                        player_heatmap = np.fliplr(player_heatmap)
                     
                     player_heatmap_sequence.append(player_heatmap)
             else:
@@ -381,6 +400,7 @@ def get_per_sample_dataset(dataset_name, height=HEIGHT, width=WIDTH, subset_frac
             target_img_height=height,
             target_img_width=width,
             subset_fraction=subset_fraction,
+            use_augmentation=True,
         )
         val_ds = PerSampleDataset(
             root_dir=TENNIS_DATASET_ROOT,
@@ -389,6 +409,7 @@ def get_per_sample_dataset(dataset_name, height=HEIGHT, width=WIDTH, subset_frac
             target_img_height=height,
             target_img_width=width,
             subset_fraction=subset_fraction,
+            use_augmentation=False,
         )
         return train_ds, val_ds
     elif dataset_name == 'tennis_clip_level_split':
@@ -399,6 +420,7 @@ def get_per_sample_dataset(dataset_name, height=HEIGHT, width=WIDTH, subset_frac
             target_img_height=height,
             target_img_width=width,
             subset_fraction=subset_fraction,
+            use_augmentation=True,
         )
         val_ds = PerSampleDataset(
             root_dir=TENNIS_DATASET_ROOT,
@@ -407,6 +429,7 @@ def get_per_sample_dataset(dataset_name, height=HEIGHT, width=WIDTH, subset_frac
             target_img_height=height,
             target_img_width=width,
             subset_fraction=subset_fraction,
+            use_augmentation=False,
         )
         return train_ds, val_ds
     else:
