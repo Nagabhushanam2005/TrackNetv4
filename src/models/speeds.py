@@ -3,7 +3,6 @@ import time
 import numpy as np
 from TrackNetV4_CSPNeXt import TrackNetV4_CSPNeXt_BallTracking
 from TrackNetv4_EfficientNet import TrackNetV4_EfficientUNet
-from TrackNetV4Plus import TrackNetV4Plus
 
 # Import your original VGG-based model
 # Assuming it's available as TrackNetV4
@@ -194,41 +193,6 @@ def main():
             import traceback
             traceback.print_exc()
     
-    # Benchmark TrackNetV4Plus Models with different configurations
-    v4plus_configs = [
-        ("TrackNetV4Plus (Lite)", 0.75, 0.8, 0.15),
-        ("TrackNetV4Plus (Standard)", 0.85, 0.9, 0.20),
-        ("TrackNetV4Plus (Large)", 1.0, 1.0, 0.25),
-    ]
-    
-    for name, width_mult, depth_mult, se_ratio in v4plus_configs:
-        print(f"\n{'='*60}")
-        print(f"BENCHMARKING: {name} (width={width_mult}, depth={depth_mult}, se={se_ratio})")
-        print(f"{'='*60}")
-        try:
-            model = TrackNetV4Plus(
-                INPUT_HEIGHT, INPUT_WIDTH,
-                width_mult=width_mult,
-                depth_mult=depth_mult,
-                se_ratio=se_ratio
-            )
-            params = count_parameters(model)
-            stats = benchmark_model(
-                model, input_shape, NUM_WARMUP, NUM_ITERATIONS, DEVICE
-            )
-            results[name] = (stats, params)
-            print_benchmark_results(name, stats, params)
-            
-            # Clean up
-            del model
-            if DEVICE == 'cuda':
-                torch.cuda.empty_cache()
-                
-        except Exception as e:
-            print(f"Error benchmarking {name}: {e}")
-            import traceback
-            traceback.print_exc()
-    
     # Comparison Summary
     if len(results) > 1:
         print("\n" + "="*80)
@@ -291,20 +255,6 @@ def main():
                         fusion_layer_type="TypeA",
                         width_mult=width_mult,
                         depth_mult=depth_mult
-                    )
-                elif name.startswith('TrackNetV4Plus'):
-                    # Extract config from name
-                    v4plus_config_map = {
-                        "TrackNetV4Plus (Lite)": (0.75, 0.8, 0.15),
-                        "TrackNetV4Plus (Standard)": (0.85, 0.9, 0.20),
-                        "TrackNetV4Plus (Large)": (1.0, 1.0, 0.25),
-                    }
-                    width_mult, depth_mult, se_ratio = v4plus_config_map[name]
-                    model = TrackNetV4Plus(
-                        INPUT_HEIGHT, INPUT_WIDTH,
-                        width_mult=width_mult,
-                        depth_mult=depth_mult,
-                        se_ratio=se_ratio
                     )
                 
                 model = model.to(DEVICE)
